@@ -1,0 +1,22 @@
+# Placeholder build (setuptools) to reserve the name on PyPI.
+# The real v0 will switch this to a maturin backend (Rust core + PyO3 bindings).
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ridgepoint"
+version = "0.0.0"
+description = "LLM inference sizing: engine-aware VRAM capacity, KV cache, and roofline intervals. Placeholder — under active development."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Iskariot" }]
+keywords = ["llm", "inference", "vram", "kv-cache", "roofline", "gpu", "sizing", "vllm"]
+
+[project.urls]
+Homepage = "https://github.com/Isk4R1oT/ridgepoint"
+Repository = "https://github.com/Isk4R1oT/ridgepoint"
+
+[tool.setuptools]
+packages = ["ridgepoint"]
