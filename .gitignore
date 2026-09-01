@@ -10,7 +10,7 @@ venv/
 
 # Rust (for the v0 maturin core)
 /target/
-Cargo.lock
+# Cargo.lock IS committed — ridgepoint ships a binary/app, so we pin deps for reproducibility.
 
 # OS / editor
 .DS_Store

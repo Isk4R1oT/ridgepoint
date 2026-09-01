@@ -1,0 +1,31 @@
+[package]
+name = "ridgepoint"
+version = "0.1.0"
+edition = "2021"
+description = "LLM inference sizing that models the engine, not just the weights."
+license = "MIT"
+repository = "https://github.com/Isk4R1oT/ridgepoint"
+readme = "README.md"
+keywords = ["llm", "inference", "vram", "kv-cache", "roofline"]
+categories = ["command-line-utilities", "science"]
+
+[lib]
+name = "ridgepoint"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "ridgepoint"
+path = "src/bin/ridgepoint.rs"
+
+[dependencies]
+# PyO3 is optional: the CLI + core build with zero deps; the `python` feature
+# (enabled by maturin) adds the Python extension module. This keeps `cargo build`
+# and `cargo test` dependency-free and fast.
+pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+
+[features]
+python = ["dep:pyo3"]
+
+[profile.release]
+lto = true
+strip = true
