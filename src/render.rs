@@ -1,7 +1,7 @@
 //! Rendering — Style A boxed dashboard (human) + `--json`.
 //! Color is deliberately omitted in v0 (added later); layout carries the structure.
 
-use crate::core::{FitReport, Interval};
+use crate::core::{FitReport, Interval, ScanReport};
 
 fn gb(bytes: f64) -> String {
     format!("{:.1}", bytes / 1e9)
@@ -153,5 +153,60 @@ pub fn json(r: &FitReport) -> String {
         format!("{{\"low\": {}, \"best\": {}, \"high\": {}}}", r.max_seqs.0, r.max_seqs.1, r.max_seqs.2),
         r.bytes_per_seq,
         recs.join(", "), nm.join(", "), r.calibrated
+    )
+}
+
+fn fmt_ctx(ctx: u32) -> String {
+    if ctx >= 1024 && ctx % 1024 == 0 {
+        format!("{}k", ctx / 1024)
+    } else {
+        ctx.to_string()
+    }
+}
+
+pub fn scan_human(r: &ScanReport) -> String {
+    let kv = if r.kv_bytes == 1 { "fp8" } else { "fp16" };
+    let hw_line = format!("{}× {} · {} · {}", r.hw.count, r.hw.device.name, r.hw.device.arch, r.hw.device.interconnect);
+    let util_s = r.util.map(|u| format!(" {:.2}", u)).unwrap_or_default();
+    let header = boxed(&[
+        "ridgepoint scan".to_string(),
+        format!("{} · {} · {}", r.model.id, r.model.kv_kind, r.quant_name),
+        hw_line,
+        format!("{}{} · KV {}", r.engine_name, util_s, kv),
+    ]);
+
+    let mut s = String::new();
+    s.push_str(&header);
+    s.push('\n');
+    s.push_str("   ctx     max seqs     GB/seq     decode tok/s\n");
+    for row in &r.rows {
+        let seqs = if row.max_seqs < 1 { "0 (OOM)".to_string() } else { row.max_seqs.to_string() };
+        s.push_str(&format!(
+            "  {:>5}   {:>9}   {:>7}   {:>5.0}–{:.0}\n",
+            fmt_ctx(row.ctx), seqs, gb(row.bytes_per_seq as f64), row.decode.low, row.decode.high
+        ));
+    }
+    s.push('\n');
+    s.push_str(&format!(
+        "  kv pool ≈ {} GB · ridge ≈ batch {:.0} · decode uncalibrated\n",
+        gb(r.kv_pool.best), r.ridge_batch
+    ));
+    s
+}
+
+pub fn scan_json(r: &ScanReport) -> String {
+    let rows: Vec<String> = r
+        .rows
+        .iter()
+        .map(|row| {
+            format!(
+                "{{\"ctx\": {}, \"max_seqs\": {}, \"bytes_per_seq\": {}, \"decode_tok_s\": {}}}",
+                row.ctx, row.max_seqs, row.bytes_per_seq, iv_json(&row.decode)
+            )
+        })
+        .collect();
+    format!(
+        "{{\n  \"model\": \"{}\", \"engine\": \"{}\", \"kv_bytes\": {},\n  \"kv_pool_bytes\": {},\n  \"ridge_batch\": {:.0},\n  \"rows\": [{}]\n}}",
+        r.model.id, r.engine_name, r.kv_bytes, iv_json(&r.kv_pool), r.ridge_batch, rows.join(", ")
     )
 }

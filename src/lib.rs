@@ -6,6 +6,7 @@
 //! directly and never pulls in PyO3.
 
 pub mod core;
+pub mod detect;
 pub mod registry;
 pub mod render;
 

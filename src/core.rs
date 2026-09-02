@@ -386,6 +386,67 @@ pub fn fit(
     }
 }
 
+// ---------------------------------------------------------------------------
+// scan — sweep context length → capacity + speed frontier (the second UX form).
+// ---------------------------------------------------------------------------
+
+pub struct ScanRow {
+    pub ctx: u32,
+    pub bytes_per_seq: u64,
+    pub max_seqs: i64,
+    pub decode: Interval,
+}
+
+pub struct ScanReport {
+    pub model: ModelShape,
+    pub hw: DeviceSet,
+    pub quant_name: String,
+    pub engine_name: String,
+    pub kv_bytes: u8,
+    pub util: Option<f64>,
+    pub kv_pool: Interval,
+    pub ridge_batch: f64,
+    pub rows: Vec<ScanRow>,
+}
+
+pub fn scan(
+    m: &ModelShape,
+    hw: &DeviceSet,
+    q: &dyn QuantScheme,
+    e: &dyn Allocator,
+    prompt_tokens: u32,
+    kv_bytes: u8,
+    ctxs: &[u32],
+    c: &Calibration,
+) -> ScanReport {
+    let weights = weights_bytes(m, q);
+    let kv_pool = e.kv_pool_bytes(hw.total_vram(), weights, c.overhead);
+    let ridge = ridge_batch(m, hw, q);
+    let mut rows = Vec::new();
+    for &ctx in ctxs {
+        let bytes_per_seq = state_bytes(m, ctx as u64, kv_bytes);
+        let max_seqs = if bytes_per_seq == 0 {
+            0
+        } else {
+            (kv_pool.best / bytes_per_seq as f64).floor() as i64
+        };
+        let w = Workload { ctx, prompt_tokens, concurrency: None, kv_bytes };
+        let decode = decode_tok_s(m, hw, q, &w, c);
+        rows.push(ScanRow { ctx, bytes_per_seq, max_seqs: max_seqs.max(0), decode });
+    }
+    ScanReport {
+        model: m.clone(),
+        hw: hw.clone(),
+        quant_name: q.name().to_string(),
+        engine_name: e.name().to_string(),
+        kv_bytes,
+        util: e.util(),
+        kv_pool,
+        ridge_batch: ridge,
+        rows,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
