@@ -30,21 +30,32 @@ fn boxed(lines: &[String]) -> String {
 }
 
 pub fn human(r: &FitReport) -> String {
-    let params_b = format!("{:.1}B", r.model.n_params as f64 / 1e9);
+    let params_b = if r.model.active_params != r.model.n_params {
+        format!("{:.0}B ({:.0}B act)", r.model.n_params as f64 / 1e9, r.model.active_params as f64 / 1e9)
+    } else {
+        format!("{:.1}B", r.model.n_params as f64 / 1e9)
+    };
     let kv = if r.kv_bytes == 1 { "fp8" } else { "fp16" };
+    let hw_line = format!("{}× {} · {} · {}", r.hw.count, r.hw.device.name, r.hw.device.arch, r.hw.device.interconnect);
     let engine_line = match r.util {
-        Some(u) => format!("{}× {} · {} {:.2} · KV {}", r.hw.count, r.hw.device.name, r.engine_name, u, kv),
-        None => format!("{}× {} · {} · KV {}", r.hw.count, r.hw.device.name, r.engine_name, kv),
+        Some(u) => format!("{} {:.2} · KV {}", r.engine_name, u, kv),
+        None => format!("{} · KV {}", r.engine_name, kv),
     };
     let header = boxed(&[
         "ridgepoint fit".to_string(),
         format!("{} · {} · {} · {}", r.model.id, r.model.kv_kind, params_b, r.quant_name),
+        hw_line,
         engine_line,
     ]);
 
     let mut s = String::new();
     s.push_str(&header);
     s.push('\n');
+
+    // Multi-GPU over PCIe: tensor-parallel all-reduce bottlenecks. Flag it (nuance the user asked for).
+    if r.hw.count > 1 && r.hw.device.interconnect.starts_with("PCIe") {
+        s.push_str("  ⚠ multi-GPU over PCIe — TP all-reduce will bottleneck (not modeled)\n\n");
+    }
 
     // VERDICT
     if r.serves {

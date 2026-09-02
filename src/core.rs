@@ -40,9 +40,10 @@ impl Interval {
 pub struct ModelShape {
     pub id: String,
     pub layers: u32,
-    pub n_params: u64,
+    pub n_params: u64,     // ALL params — what memory must hold (every MoE expert is resident)
+    pub active_params: u64, // params read PER TOKEN — equals n_params for dense; << for MoE
     pub state: StateGeometry,
-    pub kv_kind: &'static str, // display label: "GQA" / "MLA" / ...
+    pub kv_kind: &'static str, // display label: "GQA" / "MLA (MoE)" / ...
 }
 
 #[derive(Clone, Debug)]
@@ -50,7 +51,9 @@ pub struct Device {
     pub name: String,
     pub vram_bytes: u64,
     pub mem_bw_bytes_s: u64,
-    pub peak_flops: f64,
+    pub peak_flops: f64,       // dense fp16 tensor throughput
+    pub arch: &'static str,    // Ampere / Hopper / Ada / Blackwell / CDNA3
+    pub interconnect: &'static str, // "NVLink4 900GB/s" / "PCIe5" — matters only multi-GPU
 }
 
 #[derive(Clone, Debug)]
@@ -159,23 +162,26 @@ pub trait QuantScheme {
     fn name(&self) -> &str;
 }
 
-pub struct Fp16;
-impl QuantScheme for Fp16 {
-    fn bytes_per_weight(&self) -> f64 { 2.0 }
-    fn name(&self) -> &str { "fp16" }
+/// A weight quant described by its REAL bytes-per-weight (not the marketing label).
+/// GGUF k-quants carry per-block scales/mins, so effective bpw > the nominal bit count
+/// (e.g. Q4_K_M ≈ 4.8 bpw, not 4.5). The full table lives in `registry::quant`.
+pub struct Quant {
+    pub name: &'static str,
+    pub bpw_bytes: f64,
 }
 
-pub struct Fp8;
-impl QuantScheme for Fp8 {
-    fn bytes_per_weight(&self) -> f64 { 1.0 }
-    fn name(&self) -> &str { "fp8" }
+impl Quant {
+    pub const fn new(name: &'static str, bpw_bytes: f64) -> Self {
+        Quant { name, bpw_bytes }
+    }
+    pub const FP16: Quant = Quant::new("fp16", 2.0);
+    pub const FP8: Quant = Quant::new("fp8", 1.0);
+    pub const Q4KM: Quant = Quant::new("q4_k_m", 4.8 / 8.0);
 }
 
-/// GGUF Q4_K_M — REAL ≈ 4.8 bits/weight, not the "4.5" label.
-pub struct Q4KM;
-impl QuantScheme for Q4KM {
-    fn bytes_per_weight(&self) -> f64 { 4.8 / 8.0 }
-    fn name(&self) -> &str { "q4_k_m" }
+impl QuantScheme for Quant {
+    fn bytes_per_weight(&self) -> f64 { self.bpw_bytes }
+    fn name(&self) -> &str { self.name }
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +238,12 @@ pub fn weights_bytes(m: &ModelShape, q: &dyn QuantScheme) -> u64 {
     (m.n_params as f64 * q.bytes_per_weight()).round() as u64
 }
 
+/// Bytes read PER TOKEN during decode — active params only (MoE reads a subset of experts).
+/// Equals `weights_bytes` for dense models.
+pub fn active_weights_bytes(m: &ModelShape, q: &dyn QuantScheme) -> u64 {
+    (m.active_params as f64 * q.bytes_per_weight()).round() as u64
+}
+
 /// Σ over layers of per-layer state at sequence length `n` (invariant I2).
 /// `kv_bytes` is the KV-cache element size — independent of the weight quant.
 pub fn state_bytes(m: &ModelShape, n: u64, kv_bytes: u8) -> u64 {
@@ -253,7 +265,7 @@ pub fn ttft_s(m: &ModelShape, hw: &DeviceSet, w: &Workload, c: &Calibration) -> 
 
 /// Decode tok/s per request — memory-bound (left of ridge): (bw·MBU)/(weights + active_kv).
 pub fn decode_tok_s(m: &ModelShape, hw: &DeviceSet, q: &dyn QuantScheme, w: &Workload, c: &Calibration) -> Interval {
-    let read = (weights_bytes(m, q) + state_bytes(m, w.ctx as u64, w.kv_bytes)) as f64; // bytes read per token
+    let read = (active_weights_bytes(m, q) + state_bytes(m, w.ctx as u64, w.kv_bytes)) as f64; // bytes read per token
     let bw = hw.total_bw();
     Interval::band(bw * c.mbu.low / read, bw * c.mbu.best / read, bw * c.mbu.high / read, c.mbu.calibrated)
 }
@@ -261,7 +273,8 @@ pub fn decode_tok_s(m: &ModelShape, hw: &DeviceSet, q: &dyn QuantScheme, w: &Wor
 /// Batch at which decode flips memory-bound → compute-bound (the ridge point):
 /// B* = (peak_flops / bandwidth) · weights_bytes / (2·params).
 pub fn ridge_batch(m: &ModelShape, hw: &DeviceSet, q: &dyn QuantScheme) -> f64 {
-    (hw.total_flops() / hw.total_bw()) * (weights_bytes(m, q) as f64) / (2.0 * m.n_params as f64)
+    // Uses ACTIVE params: both the per-token FLOPs and the bytes read scale with active, not total.
+    (hw.total_flops() / hw.total_bw()) * (active_weights_bytes(m, q) as f64) / (2.0 * m.active_params as f64)
 }
 
 pub struct FitReport {
@@ -320,8 +333,7 @@ pub fn fit(
     let mut recs: Vec<(String, String)> = Vec::new();
     if !serves {
         // Only the WEIGHTS shrink under fp8; the KV cache keeps the user's kv_bytes.
-        let fp8 = Fp8;
-        let w8 = weights_bytes(m, &fp8);
+        let w8 = weights_bytes(m, &Quant::FP8);
         let pool8 = e.kv_pool_bytes(total_vram, w8, c.overhead);
         let seq8 = state_bytes(m, w.ctx as u64, w.kv_bytes);
         let n8 = if seq8 == 0 { 0 } else { (pool8.best / seq8 as f64).floor() as i64 };
@@ -338,6 +350,13 @@ pub fn fit(
                 break;
             }
         }
+    }
+
+    // Multi-GPU: the tensor-parallel all-reduce over the interconnect is a real cost we
+    // do not yet model — surface it honestly rather than silently omitting it (G3).
+    let mut not_modeled = vec!["prefix-cache", "chunked-prefill"];
+    if hw.count > 1 {
+        not_modeled.push("tp-comm (interconnect)");
     }
 
     FitReport {
@@ -362,7 +381,7 @@ pub fn fit(
         decode,
         ridge_batch: rb,
         recommendations: recs,
-        not_modeled: vec!["prefix-cache", "chunked-prefill"],
+        not_modeled,
         calibrated: c.overhead.calibrated,
     }
 }
@@ -377,7 +396,7 @@ mod tests {
     fn c1_llama_70b_deterministic_memory() {
         let m = registry::model("llama-3-70b").unwrap();
         // weights: 70,553,706,496 params × 2 bytes
-        assert_eq!(weights_bytes(&m, &Fp16), 141_107_412_992);
+        assert_eq!(weights_bytes(&m, &Quant::FP16), 141_107_412_992);
         // kv per token (GQA, fp16): 2·8·128·2 = 4096 B/layer × 80 layers
         assert_eq!(state_bytes(&m, 1, 2), 327_680);
         // per sequence @ 4096 ctx
@@ -398,7 +417,7 @@ mod tests {
         let dev = registry::device("a100-80gb").unwrap();
         let hw = DeviceSet { device: dev, count: 2 };
         let w = Workload { ctx: 4096, prompt_tokens: 2048, concurrency: None, kv_bytes: 2 };
-        let r = fit(&m, &hw, &Fp16, &Vllm { util: 0.90 }, &w, &Calibration::uncalibrated());
+        let r = fit(&m, &hw, &Quant::FP16, &Vllm { util: 0.90 }, &w, &Calibration::uncalibrated());
         assert!(!r.serves, "should not serve at fp16 on 2×A100");
         assert!(r.naive_would_say, "naive weights<VRAM check would wrongly say fits");
         assert_eq!(r.max_seqs.1, 0);
@@ -420,5 +439,18 @@ mod tests {
         let mha = StateGeometry::Mha { head_dim: 128, n_heads: 64 };
         let gqa = StateGeometry::Gqa { head_dim: 128, n_kv_heads: 8 };
         assert_eq!(mha.layer_state_bytes(4096, 2), gqa.layer_state_bytes(4096, 2) * 8);
+    }
+
+    // MoE: memory holds ALL params, but decode reads only the ACTIVE subset.
+    #[test]
+    fn moe_reads_active_not_total() {
+        let moe = registry::model("deepseek-r1").unwrap();
+        assert_ne!(moe.active_params, moe.n_params, "deepseek-r1 is MoE");
+        assert_eq!(active_weights_bytes(&moe, &Quant::FP16), (moe.active_params as f64 * 2.0).round() as u64);
+        // weights (memory) still counts every expert
+        assert_eq!(weights_bytes(&moe, &Quant::FP16), (moe.n_params as f64 * 2.0).round() as u64);
+        // dense model: active == total
+        let dense = registry::model("llama-3-8b").unwrap();
+        assert_eq!(dense.active_params, dense.n_params);
     }
 }
