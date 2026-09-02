@@ -28,6 +28,10 @@ impl Interval {
     pub fn band(low: f64, best: f64, high: f64, calibrated: bool) -> Self {
         Interval { low, best, high, exact: false, calibrated }
     }
+    /// Scale all three bounds by `k` (e.g. per-GPU overhead → aggregate over `count` GPUs).
+    pub fn scale(self, k: f64) -> Interval {
+        Interval { low: self.low * k, best: self.best * k, high: self.high * k, ..self }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +87,7 @@ pub struct Workload {
 /// bands with `calibrated = false`; RunPod (G1) replaces them with fit values.
 #[derive(Clone, Copy, Debug)]
 pub struct Calibration {
-    pub overhead: Interval, // non-KV runtime overhead (activations, CUDA graphs), bytes
+    pub overhead: Interval, // non-KV overhead PER GPU (activations + CUDA graphs + non-torch), bytes
     pub mfu: Interval,      // prefill compute efficiency (0..1)
     pub mbu: Interval,      // decode memory-bandwidth efficiency (0..1)
 }
@@ -314,7 +318,11 @@ pub fn fit(
 ) -> FitReport {
     let total_vram = hw.total_vram();
     let weights = weights_bytes(m, q);
-    let kv_pool = e.kv_pool_bytes(total_vram, weights, c.overhead);
+    // Overhead is PER-GPU (each TP worker reserves its own CUDA context + graphs + activation
+    // workspace), so the aggregate scales with GPU count — vLLM applies gpu_memory_utilization
+    // and runs its profiling pass per device. [verified against vLLM docs]
+    let overhead = c.overhead.scale(hw.count as f64);
+    let kv_pool = e.kv_pool_bytes(total_vram, weights, overhead);
 
     let kv_per_token = state_bytes(m, 1, w.kv_bytes);
     let bytes_per_seq = state_bytes(m, w.ctx as u64, w.kv_bytes);
@@ -334,7 +342,7 @@ pub fn fit(
     if !serves {
         // Only the WEIGHTS shrink under fp8; the KV cache keeps the user's kv_bytes.
         let w8 = weights_bytes(m, &Quant::FP8);
-        let pool8 = e.kv_pool_bytes(total_vram, w8, c.overhead);
+        let pool8 = e.kv_pool_bytes(total_vram, w8, overhead);
         let seq8 = state_bytes(m, w.ctx as u64, w.kv_bytes);
         let n8 = if seq8 == 0 { 0 } else { (pool8.best / seq8 as f64).floor() as i64 };
         if n8 >= 1 {
@@ -343,7 +351,7 @@ pub fn fit(
         for extra in [2u32, 4u32, 8u32] {
             if extra <= hw.count { continue; }
             let hw2 = DeviceSet { device: hw.device.clone(), count: extra };
-            let pool2 = e.kv_pool_bytes(hw2.total_vram(), weights, c.overhead);
+            let pool2 = e.kv_pool_bytes(hw2.total_vram(), weights, c.overhead.scale(extra as f64));
             let n2 = if bytes_per_seq == 0 { 0 } else { (pool2.best / bytes_per_seq as f64).floor() as i64 };
             if n2 >= 1 {
                 recs.push((format!("--gpu {}:{}", hw.device.name, extra), "fits".to_string()));
@@ -368,7 +376,7 @@ pub fn fit(
         total_vram,
         managed_pool: e.managed_pool(total_vram),
         weights,
-        overhead: c.overhead,
+        overhead,
         kv_pool,
         kv_per_token,
         bytes_per_seq,
@@ -420,7 +428,8 @@ pub fn scan(
     c: &Calibration,
 ) -> ScanReport {
     let weights = weights_bytes(m, q);
-    let kv_pool = e.kv_pool_bytes(hw.total_vram(), weights, c.overhead);
+    let overhead = c.overhead.scale(hw.count as f64); // per-GPU → aggregate over count GPUs
+    let kv_pool = e.kv_pool_bytes(hw.total_vram(), weights, overhead);
     let ridge = ridge_batch(m, hw, q);
     let mut rows = Vec::new();
     for &ctx in ctxs {
@@ -513,5 +522,17 @@ mod tests {
         // dense model: active == total
         let dense = registry::model("llama-3-8b").unwrap();
         assert_eq!(dense.active_params, dense.n_params);
+    }
+
+    // Overhead is per-GPU: aggregate must scale with GPU count (the bug Igor's principle exposed).
+    #[test]
+    fn overhead_scales_per_gpu() {
+        let m = registry::model("deepseek-r1").unwrap();
+        let dev = registry::device("h100-80gb").unwrap();
+        let w = Workload { ctx: 8192, prompt_tokens: 2048, concurrency: None, kv_bytes: 2 };
+        let cal = Calibration::uncalibrated();
+        let r1 = fit(&m, &DeviceSet { device: dev.clone(), count: 1 }, &Quant::Q4KM, &Vllm { util: 0.90 }, &w, &cal);
+        let r8 = fit(&m, &DeviceSet { device: dev, count: 8 }, &Quant::Q4KM, &Vllm { util: 0.90 }, &w, &cal);
+        assert!((r8.overhead.best - r1.overhead.best * 8.0).abs() < 1.0, "8 GPUs → 8× per-GPU overhead");
     }
 }
