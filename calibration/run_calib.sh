@@ -7,7 +7,10 @@
 # Boot gate first (ops rule): verify CUDA + real HBM bandwidth; bail if bandwidth < 85% of spec.
 set -euo pipefail
 
-ROOT=/models
+# ROOT = where models + results live: the mounted volume (/models) or ephemeral disk (/workspace).
+ROOT="${ROOT:-/models}"
+# The harness + parser arrive via `git clone` of this repo, so resolve them next to this script.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RESULTS="$ROOT/results"
 mkdir -p "$RESULTS" "$ROOT/hf"
 export HF_HOME="${HF_HOME:-$ROOT/hf}"
@@ -77,7 +80,7 @@ measure_model() {
   done
 
   # parse memory split
-  python "$ROOT/parse_vllm_mem.py" < "$slog" > "$RESULTS/$id.mem.json" || true
+  python "$SCRIPT_DIR/parse_vllm_mem.py" < "$slog" > "$RESULTS/$id.mem.json" || true
 
   if [ "$ok" = 1 ]; then
     # decode/prefill benchmarks (standardized, reproducible). Args are vLLM-version sensitive.
