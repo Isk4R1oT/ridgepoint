@@ -12,6 +12,10 @@ venv/
 /target/
 # Cargo.lock IS committed — ridgepoint ships a binary/app, so we pin deps for reproducibility.
 
+# IDE / tooling cruft (local only)
+.idea/
+uv.lock
+
 # OS / editor
 .DS_Store
 
