@@ -3,17 +3,17 @@
 
 use crate::core::{FitReport, Interval, ScanReport};
 
-fn gb(bytes: f64) -> String {
-    format!("{:.1}", bytes / 1e9)
+fn gib(bytes: f64) -> String {
+    format!("{:.1}", bytes / (1024.0 * 1024.0 * 1024.0))
 }
 
-/// low·best·high for a memory interval, in GB.
+/// low·best·high for a memory interval, in GiB.
 fn mem_band(i: &Interval) -> String {
     if i.exact {
-        format!("{:>6} GB  exact", gb(i.best))
+        format!("{:>6} GiB  exact", gib(i.best))
     } else {
         let flag = if i.calibrated { "" } else { "  ~est" };
-        format!("{:>6} ·{:>6} ·{:>6} GB{}", gb(i.low), gb(i.best), gb(i.high), flag)
+        format!("{:>6} ·{:>6} ·{:>6} GiB{}", gib(i.low), gib(i.best), gib(i.high), flag)
     }
 }
 
@@ -62,11 +62,11 @@ pub fn human(r: &FitReport) -> String {
         s.push_str(&format!("  ✓  SERVES        ~{} seqs @ {} ctx (best)\n", r.max_seqs.1, r.ctx));
     } else {
         s.push_str("  ✗  WON'T SERVE\n");
-        s.push_str(&format!("     KV pool ≈ {} GB after the engine's grab\n", gb(r.kv_pool.best)));
+        s.push_str(&format!("     KV pool ≈ {} GiB after the engine's grab\n", gib(r.kv_pool.best)));
         if r.naive_would_say {
             s.push_str(&format!(
                 "     a naive weights<VRAM check says \"fits\" ({}<{}) — wrong\n",
-                gb(r.weights as f64), gb(r.total_vram as f64)
+                gib(r.weights as f64), gib(r.total_vram as f64)
             ));
         }
     }
@@ -79,24 +79,25 @@ pub fn human(r: &FitReport) -> String {
     s.push_str(&format!("    KV pool         {}   ←\n", mem_band(&r.kv_pool)));
     s.push('\n');
 
-    // SPEED
-    let cal = if r.calibrated { "calibrated" } else { "roofline · uncalibrated" };
-    s.push_str(&format!("  SPEED  {}\n", cal));
+    // SPEED — per-metric calibration honesty (decode MBU measured; TTFT MFU literature)
+    s.push_str("  SPEED  roofline\n");
+    let ttft_flag = if r.ttft.calibrated { "" } else { "  ~MFU literature" };
+    let dec_flag = if r.decode.calibrated { "  MBU calibrated" } else { "  ~est" };
     s.push_str(&format!(
-        "    TTFT @prompt      {:>5.2} ·{:>5.2} ·{:>5.2} s\n",
-        r.ttft.low, r.ttft.best, r.ttft.high
+        "    TTFT @prompt      {:>5.2} ·{:>5.2} ·{:>5.2} s{}\n",
+        r.ttft.low, r.ttft.best, r.ttft.high, ttft_flag
     ));
     s.push_str(&format!(
-        "    decode/req        {:>5.0} ·{:>5.0} ·{:>5.0} tok/s\n",
-        r.decode.low, r.decode.best, r.decode.high
+        "    decode/req        {:>5.0} ·{:>5.0} ·{:>5.0} tok/s{}\n",
+        r.decode.low, r.decode.best, r.decode.high, dec_flag
     ));
     s.push_str(&format!("    regime   memory-bound · ridge ≈ batch {:.0}\n", r.ridge_batch));
     s.push('\n');
 
     // CAPACITY
     s.push_str(&format!(
-        "  CAPACITY @{}       {} seqs · {} GB/seq\n",
-        r.ctx, r.max_seqs.1, gb(r.bytes_per_seq as f64)
+        "  CAPACITY @{}       {} seqs · {} GiB/seq\n",
+        r.ctx, r.max_seqs.1, gib(r.bytes_per_seq as f64)
     ));
 
     // FIX
@@ -178,18 +179,18 @@ pub fn scan_human(r: &ScanReport) -> String {
     let mut s = String::new();
     s.push_str(&header);
     s.push('\n');
-    s.push_str("   ctx     max seqs     GB/seq     decode tok/s\n");
+    s.push_str("   ctx     max seqs     GiB/seq     decode tok/s\n");
     for row in &r.rows {
         let seqs = if row.max_seqs < 1 { "0 (OOM)".to_string() } else { row.max_seqs.to_string() };
         s.push_str(&format!(
             "  {:>5}   {:>9}   {:>7}   {:>5.0}–{:.0}\n",
-            fmt_ctx(row.ctx), seqs, gb(row.bytes_per_seq as f64), row.decode.low, row.decode.high
+            fmt_ctx(row.ctx), seqs, gib(row.bytes_per_seq as f64), row.decode.low, row.decode.high
         ));
     }
     s.push('\n');
     s.push_str(&format!(
-        "  kv pool ≈ {} GB · ridge ≈ batch {:.0} · decode uncalibrated\n",
-        gb(r.kv_pool.best), r.ridge_batch
+        "  kv pool ≈ {} GiB · ridge ≈ batch {:.0} · decode uncalibrated\n",
+        gib(r.kv_pool.best), r.ridge_batch
     ));
     s
 }

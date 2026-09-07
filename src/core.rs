@@ -44,6 +44,7 @@ impl Interval {
 pub struct ModelShape {
     pub id: String,
     pub layers: u32,
+    pub d_model: u32,       // hidden size — drives the calibrated activation/cudagraph overhead
     pub n_params: u64,     // ALL params — what memory must hold (every MoE expert is resident)
     pub active_params: u64, // params read PER TOKEN — equals n_params for dense; << for MoE
     pub state: StateGeometry,
@@ -87,19 +88,40 @@ pub struct Workload {
 /// bands with `calibrated = false`; RunPod (G1) replaces them with fit values.
 #[derive(Clone, Copy, Debug)]
 pub struct Calibration {
-    pub overhead: Interval, // non-KV overhead PER GPU (activations + CUDA graphs + non-torch), bytes
-    pub mfu: Interval,      // prefill compute efficiency (0..1)
-    pub mbu: Interval,      // decode memory-bandwidth efficiency (0..1)
+    pub mfu: Interval, // prefill compute efficiency (0..1)
+    pub mbu: Interval, // decode memory-bandwidth efficiency (0..1)
 }
 
 impl Calibration {
-    pub fn uncalibrated() -> Self {
+    /// Coefficients from the 2026-09-07 RunPod calibration (vLLM 0.28, util 0.90).
+    /// MBU: MEASURED on A100 (0.62) and H100 (0.60) via direct decode benchmark → 0.61, transfers
+    ///      across Ampere/Hopper (calibrated = true).
+    /// MFU: could NOT be isolated remotely (TTFT is network-bound for fast GPUs) → literature band,
+    ///      calibrated = false, so TTFT stays an honest wide interval.
+    pub fn measured() -> Self {
         Calibration {
-            overhead: Interval::band(2.5e9, 3.0e9, 4.0e9, false),
-            mfu: Interval::band(0.30, 0.40, 0.50, false),
-            mbu: Interval::band(0.60, 0.70, 0.85, false),
+            mfu: Interval::band(0.25, 0.40, 0.55, false),
+            mbu: Interval::band(0.55, 0.61, 0.68, true),
         }
     }
+}
+
+const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+
+/// Calibrated non-KV overhead, aggregate over `count` GPUs, returned as a bytes interval.
+///
+/// Measured on A100-80GB / vLLM 0.28 / util 0.90 across llama-3-8b/70b, deepseek-14b, ds-v2-lite,
+/// and 8b@TP2. The structure (NOT hardcoded per model):
+///   overhead_agg = activation + count·(non_torch + cudagraph)
+///     activation ≈ d_model/4096 GiB   — shards across GPUs (aggregate ~constant in count)
+///     cudagraph  ≈ 0.55·d_model/4096 GiB per GPU     non_torch ≈ 0.28 (dense) / 0.70 (MoE) per GPU
+/// Fit: 8b/N1 1.83 (meas 1.82) · 70b/N1 3.38 (meas 3.53) · 8b/N2 2.66 (meas 2.56). Band ±~20%.
+pub fn calibrated_overhead(m: &ModelShape, count: u32) -> Interval {
+    let h = m.d_model as f64 / 4096.0;
+    let moe = m.active_params != m.n_params;
+    let non_torch = if moe { 0.70 } else { 0.28 };
+    let best = h + count as f64 * (non_torch + 0.55 * h); // GiB
+    Interval::band(best * 0.82 * GIB, best * GIB, best * 1.20 * GIB, true)
 }
 
 // ---------------------------------------------------------------------------
@@ -318,10 +340,9 @@ pub fn fit(
 ) -> FitReport {
     let total_vram = hw.total_vram();
     let weights = weights_bytes(m, q);
-    // Overhead is PER-GPU (each TP worker reserves its own CUDA context + graphs + activation
-    // workspace), so the aggregate scales with GPU count — vLLM applies gpu_memory_utilization
-    // and runs its profiling pass per device. [verified against vLLM docs]
-    let overhead = c.overhead.scale(hw.count as f64);
+    // Non-KV overhead from the calibrated model (activation shards, per-GPU context/graphs scale
+    // with count) — measured on real vLLM, not a flat guess. See `calibrated_overhead`.
+    let overhead = calibrated_overhead(m, hw.count);
     let kv_pool = e.kv_pool_bytes(total_vram, weights, overhead);
 
     let kv_per_token = state_bytes(m, 1, w.kv_bytes);
@@ -351,7 +372,7 @@ pub fn fit(
         for extra in [2u32, 4u32, 8u32] {
             if extra <= hw.count { continue; }
             let hw2 = DeviceSet { device: hw.device.clone(), count: extra };
-            let pool2 = e.kv_pool_bytes(hw2.total_vram(), weights, c.overhead.scale(extra as f64));
+            let pool2 = e.kv_pool_bytes(hw2.total_vram(), weights, calibrated_overhead(m, extra));
             let n2 = if bytes_per_seq == 0 { 0 } else { (pool2.best / bytes_per_seq as f64).floor() as i64 };
             if n2 >= 1 {
                 recs.push((format!("--gpu {}:{}", hw.device.name, extra), "fits".to_string()));
@@ -390,7 +411,7 @@ pub fn fit(
         ridge_batch: rb,
         recommendations: recs,
         not_modeled,
-        calibrated: c.overhead.calibrated,
+        calibrated: overhead.calibrated && c.mbu.calibrated,
     }
 }
 
@@ -428,7 +449,7 @@ pub fn scan(
     c: &Calibration,
 ) -> ScanReport {
     let weights = weights_bytes(m, q);
-    let overhead = c.overhead.scale(hw.count as f64); // per-GPU → aggregate over count GPUs
+    let overhead = calibrated_overhead(m, hw.count);
     let kv_pool = e.kv_pool_bytes(hw.total_vram(), weights, overhead);
     let ridge = ridge_batch(m, hw, q);
     let mut rows = Vec::new();
@@ -480,17 +501,16 @@ mod tests {
         assert_eq!(state_bytes(&m, 4096, 1), state_bytes(&m, 4096, 2) / 2);
     }
 
-    // C1 verdict: naive says "fits", engine-aware says it won't serve.
+    // C1 (calibrated): 70B fp16 on 2×A100 — naive "fits" (141<170 GiB usable) but real capacity is tiny.
     #[test]
-    fn c1_wont_serve_but_naive_would() {
+    fn c1_70b_2xa100_serves_but_tight() {
         let m = registry::model("llama-3-70b").unwrap();
-        let dev = registry::device("a100-80gb").unwrap();
-        let hw = DeviceSet { device: dev, count: 2 };
+        let hw = DeviceSet { device: registry::device("a100-80gb").unwrap(), count: 2 };
         let w = Workload { ctx: 4096, prompt_tokens: 2048, concurrency: None, kv_bytes: 2 };
-        let r = fit(&m, &hw, &Quant::FP16, &Vllm { util: 0.90 }, &w, &Calibration::uncalibrated());
-        assert!(!r.serves, "should not serve at fp16 on 2×A100");
-        assert!(r.naive_would_say, "naive weights<VRAM check would wrongly say fits");
-        assert_eq!(r.max_seqs.1, 0);
+        let r = fit(&m, &hw, &Quant::FP16, &Vllm { util: 0.90 }, &w, &Calibration::measured());
+        assert!(r.naive_would_say, "naive weights<VRAM says fits");
+        assert!(r.serves, "with calibrated usable VRAM it barely serves");
+        assert!(r.max_seqs.1 <= 10, "capacity tiny for a nominal-160GB box: got {}", r.max_seqs.1);
     }
 
     // MLA geometry (Igor #3: don't trust it without a test). Latent+rope, no per-head factor.
@@ -524,15 +544,13 @@ mod tests {
         assert_eq!(dense.active_params, dense.n_params);
     }
 
-    // Overhead is per-GPU: aggregate must scale with GPU count (the bug Igor's principle exposed).
+    // Calibrated: overhead grows with GPU count but SUBLINEARLY — activation shards under TP.
     #[test]
-    fn overhead_scales_per_gpu() {
-        let m = registry::model("deepseek-r1").unwrap();
-        let dev = registry::device("h100-80gb").unwrap();
-        let w = Workload { ctx: 8192, prompt_tokens: 2048, concurrency: None, kv_bytes: 2 };
-        let cal = Calibration::uncalibrated();
-        let r1 = fit(&m, &DeviceSet { device: dev.clone(), count: 1 }, &Quant::Q4KM, &Vllm { util: 0.90 }, &w, &cal);
-        let r8 = fit(&m, &DeviceSet { device: dev, count: 8 }, &Quant::Q4KM, &Vllm { util: 0.90 }, &w, &cal);
-        assert!((r8.overhead.best - r1.overhead.best * 8.0).abs() < 1.0, "8 GPUs → 8× per-GPU overhead");
+    fn overhead_sublinear_in_count() {
+        let m = registry::model("llama-3-70b").unwrap();
+        let o1 = calibrated_overhead(&m, 1).best;
+        let o8 = calibrated_overhead(&m, 8).best;
+        assert!(o8 > o1, "more GPUs → more aggregate overhead");
+        assert!(o8 < o1 * 8.0, "but sublinear: activation shards, not ×count");
     }
 }
