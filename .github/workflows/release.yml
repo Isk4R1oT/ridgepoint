@@ -36,14 +36,11 @@ jobs:
           path: dist
 
   macos:
-    strategy:
-      matrix:
-        include:
-          - runner: macos-13   # Intel
-            target: x86_64
-          - runner: macos-14   # Apple Silicon
-            target: aarch64
-    runs-on: ${{ matrix.runner }}
+    # macos-14 (Apple Silicon) runners are available; GitHub is retiring the Intel
+    # macos-13 runner, so a macos-13 job can hang forever "waiting for a runner".
+    # Build ONE universal2 wheel on the arm64 runner — it carries both Apple Silicon
+    # and Intel in a single file, from one always-available runner.
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -52,12 +49,12 @@ jobs:
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
-          target: ${{ matrix.target }}
+          target: universal2-apple-darwin
           args: --release --out dist
           sccache: "true"
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-macos-${{ matrix.target }}
+          name: wheels-macos-universal2
           path: dist
 
   windows:
