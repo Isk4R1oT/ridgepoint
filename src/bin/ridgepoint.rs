@@ -112,7 +112,7 @@ fn cmd_fit(args: &[String]) {
     let o = parse(args);
     let (m, hw, q, e) = build(&o);
     let w = Workload { ctx: o.ctx, prompt_tokens: o.prompt, concurrency: None, kv_bytes: o.kv_bytes };
-    let r = fit(&m, &hw, q.as_ref(), e.as_ref(), &w, &Calibration::uncalibrated());
+    let r = fit(&m, &hw, q.as_ref(), e.as_ref(), &w, &Calibration::measured());
     if o.json { println!("{}", render::json(&r)); } else { print!("{}", render::human(&r)); }
 }
 
@@ -120,7 +120,7 @@ fn cmd_scan(args: &[String]) {
     let o = parse(args);
     let (m, hw, q, e) = build(&o);
     let ctxs = [512u32, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072];
-    let r = scan(&m, &hw, q.as_ref(), e.as_ref(), o.prompt, o.kv_bytes, &ctxs, &Calibration::uncalibrated());
+    let r = scan(&m, &hw, q.as_ref(), e.as_ref(), o.prompt, o.kv_bytes, &ctxs, &Calibration::measured());
     if o.json { println!("{}", render::scan_json(&r)); } else { print!("{}", render::scan_human(&r)); }
 }
 

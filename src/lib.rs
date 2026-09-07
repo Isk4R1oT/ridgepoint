@@ -45,7 +45,7 @@ mod python {
             other => return Err(PyValueError::new_err(format!("unknown engine: {other}"))),
         };
         let w = Workload { ctx, prompt_tokens: prompt, concurrency: None, kv_bytes };
-        let report = fit(&m, &hw, q.as_ref(), alloc.as_ref(), &w, &Calibration::uncalibrated());
+        let report = fit(&m, &hw, q.as_ref(), alloc.as_ref(), &w, &Calibration::measured());
         Ok(render::json(&report))
     }
 
