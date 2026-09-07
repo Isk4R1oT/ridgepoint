@@ -21,7 +21,9 @@ path = "src/bin/ridgepoint.rs"
 # PyO3 is optional: the CLI + core build with zero deps; the `python` feature
 # (enabled by maturin) adds the Python extension module. This keeps `cargo build`
 # and `cargo test` dependency-free and fast.
-pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+# abi3-py39: build against Python's stable ABI → ONE `cp39-abi3` wheel per platform
+# that loads on 3.9+ (and future versions) with no rebuild. Collapses the wheel matrix.
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"], optional = true }
 
 [features]
 python = ["dep:pyo3"]
