@@ -5,17 +5,25 @@ build-backend = "maturin"
 [project]
 name = "ridgepoint"
 version = "0.1.0"
-description = "LLM inference sizing that models the engine, not just the weights: engine-aware VRAM capacity, KV cache (GQA/MLA), and roofline intervals."
+description = "LLM inference sizing that models the engine, not just the weights: engine-aware VRAM capacity, KV cache (GQA/MLA), and roofline intervals — calibrated to ~1% against real vLLM."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Iskariot" }]
 keywords = ["llm", "inference", "vram", "kv-cache", "roofline", "gpu", "sizing", "vllm"]
+dependencies = ["huggingface_hub>=0.20"]
 
 [project.urls]
 Homepage = "https://github.com/Isk4R1oT/ridgepoint"
 Repository = "https://github.com/Isk4R1oT/ridgepoint"
 
+[project.scripts]
+ridgepoint = "ridgepoint.cli:main"
+
 [tool.maturin]
-# Enable the PyO3 extension for wheel builds; the CLI/core stay dep-free otherwise.
+# Mixed layout: pure-Python package in python/ + Rust extension compiled as ridgepoint._core.
+# HF-fetch (the changeable edge) lives in Python; the Rust core stays pure math.
+bindings = "pyo3"
 features = ["python"]
+python-source = "python"
+module-name = "ridgepoint._core"
