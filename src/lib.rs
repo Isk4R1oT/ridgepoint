@@ -28,6 +28,7 @@ mod python {
     fn alloc_of(engine: &str) -> PyResult<Box<dyn Allocator>> {
         match engine {
             "vllm" => Ok(Box::new(Vllm { util: 0.90 })),
+            "sglang" => Ok(Box::new(Sglang { util: 0.90 })),
             "llamacpp" | "llama.cpp" => Ok(Box::new(LlamaCpp)),
             o => Err(PyValueError::new_err(format!("unknown engine: {o}"))),
         }

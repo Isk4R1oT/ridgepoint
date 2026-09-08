@@ -22,3 +22,6 @@ uv.lock
 # Internal design / reflection notes — LOCAL ONLY, never pushed.
 # We ship logic (code), not our thinking. README.md at root stays tracked.
 design/
+
+# Article draft workspace — LOCAL ONLY.
+internal/

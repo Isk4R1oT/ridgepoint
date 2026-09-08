@@ -218,6 +218,9 @@ pub trait Allocator {
     /// KV pool available after this engine's allocation, as an interval (OOM honesty).
     fn kv_pool_bytes(&self, total_vram: u64, weights: u64, overhead: Interval) -> Interval;
     fn name(&self) -> &str;
+    /// Whether this engine's overhead coefficients are calibrated on real hardware.
+    /// Only vLLM is measured so far; others share the vLLM model as a first approximation.
+    fn calibrated(&self) -> bool { true }
     /// vLLM-style pre-grab utilisation, if any (for display).
     fn util(&self) -> Option<f64> { None }
     fn managed_pool(&self, total_vram: u64) -> Option<u64> {
@@ -242,6 +245,28 @@ impl Allocator for Vllm {
         )
     }
     fn name(&self) -> &str { "vLLM" }
+    fn util(&self) -> Option<f64> { Some(self.util) }
+}
+
+/// SGLang pre-grabs `mem_fraction_static × VRAM` (weights + KV pool) exactly like vLLM's
+/// pool — same math, different flag. Overhead coefficients not yet independently calibrated,
+/// so `calibrated()` is false: numbers are a vLLM-derived first approximation.
+pub struct Sglang {
+    pub util: f64,
+}
+impl Allocator for Sglang {
+    fn kv_pool_bytes(&self, total_vram: u64, weights: u64, overhead: Interval) -> Interval {
+        let grab = total_vram as f64 * self.util;
+        let w = weights as f64;
+        Interval::band(
+            grab - w - overhead.high,
+            grab - w - overhead.best,
+            grab - w - overhead.low,
+            false,
+        )
+    }
+    fn name(&self) -> &str { "SGLang" }
+    fn calibrated(&self) -> bool { false }
     fn util(&self) -> Option<f64> { Some(self.util) }
 }
 
@@ -411,7 +436,7 @@ pub fn fit(
         ridge_batch: rb,
         recommendations: recs,
         not_modeled,
-        calibrated: overhead.calibrated && c.mbu.calibrated,
+        calibrated: overhead.calibrated && c.mbu.calibrated && e.calibrated(),
     }
 }
 

@@ -23,7 +23,7 @@ def main(argv=None) -> int:
         sp = sub.add_parser(name, help=f"{name} a model onto hardware (id or HuggingFace org/repo)")
         sp.add_argument("model", help="built-in id (e.g. llama-3-70b) OR HuggingFace repo (org/name)")
         sp.add_argument("--gpu", default="a100-80gb:1", help="device id, optionally :N (e.g. h100-80gb:8)")
-        sp.add_argument("--engine", default="vllm", choices=["vllm", "llamacpp", "llama.cpp"])
+        sp.add_argument("--engine", default="vllm", choices=["vllm", "sglang", "llamacpp", "llama.cpp"])
         sp.add_argument("--dtype", default="fp16", help="weight quant: fp16|fp8|q4_k_m|awq|...")
         sp.add_argument("--kv-cache-dtype", dest="kv", default="fp16", choices=["fp16", "bf16", "fp8"])
         sp.add_argument("--prompt", type=int, default=2048)

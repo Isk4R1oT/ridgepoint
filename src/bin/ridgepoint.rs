@@ -9,7 +9,7 @@ fn fail(msg: &str) -> ! {
 }
 
 const USAGE: &str = "usage:
-  ridgepoint fit  <model> [--gpu id:N|auto[:N]] [--engine vllm|llamacpp] [--dtype fp16|fp8|q4_k_m|...] [--kv-cache-dtype fp16|fp8] [--ctx N] [--prompt N] [--json]
+  ridgepoint fit  <model> [--gpu id:N|auto[:N]] [--engine vllm|sglang|llamacpp] [--dtype fp16|fp8|q4_k_m|...] [--kv-cache-dtype fp16|fp8] [--ctx N] [--prompt N] [--json]
   ridgepoint scan <model> [same flags; sweeps ctx, so --ctx is ignored]
   ridgepoint devices        detect local GPUs";
 
@@ -102,6 +102,7 @@ fn build(o: &Opts) -> (ModelShape, DeviceSet, Box<dyn QuantScheme>, Box<dyn Allo
     let quant = registry::quant(&o.dtype).unwrap_or_else(|| fail(&format!("unknown dtype: {}", o.dtype)));
     let alloc: Box<dyn Allocator> = match o.engine.as_str() {
         "vllm" => Box::new(Vllm { util: 0.90 }),
+        "sglang" => Box::new(Sglang { util: 0.90 }),
         "llamacpp" | "llama.cpp" => Box::new(LlamaCpp),
         x => fail(&format!("unknown engine: {x}")),
     };
