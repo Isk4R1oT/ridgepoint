@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "ridgepoint"
-version = "0.1.1"
+version = "0.1.2"
 description = "LLM inference sizing that models the engine, not just the weights: engine-aware VRAM capacity, KV cache (GQA/MLA), and roofline intervals — calibrated to ~1% against real vLLM."
 readme = "README.md"
 requires-python = ">=3.9"

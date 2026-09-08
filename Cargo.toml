@@ -1,6 +1,6 @@
 [package]
 name = "ridgepoint"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "LLM inference sizing that models the engine, not just the weights."
 license = "MIT"

@@ -86,11 +86,11 @@ mod python {
 
     /// fit from explicit dims — the HF-fetch path (Python adapter builds these from HF metadata).
     #[pyfunction]
-    #[pyo3(signature = (id, layers, d_model, n_params, active_params, geom, head_dim = 0, n_heads = 0, n_kv_heads = 0, d_c = 0, d_rope = 0, gpu = "a100-80gb", count = 1, engine = "vllm", dtype = "fp16", kv_cache_dtype = "fp16", ctx = 4096, prompt = 2048, as_json = false))]
+    #[pyo3(signature = (id, layers, kv_layers, d_model, n_params, active_params, geom, head_dim = 0, n_heads = 0, n_kv_heads = 0, d_c = 0, d_rope = 0, gpu = "a100-80gb", count = 1, engine = "vllm", dtype = "fp16", kv_cache_dtype = "fp16", ctx = 4096, prompt = 2048, as_json = false))]
     #[allow(clippy::too_many_arguments)]
-    fn fit_shape(id: &str, layers: u32, d_model: u32, n_params: u64, active_params: u64, geom: &str, head_dim: u32, n_heads: u32, n_kv_heads: u32, d_c: u32, d_rope: u32, gpu: &str, count: u32, engine: &str, dtype: &str, kv_cache_dtype: &str, ctx: u32, prompt: u32, as_json: bool) -> PyResult<String> {
+    fn fit_shape(id: &str, layers: u32, kv_layers: u32, d_model: u32, n_params: u64, active_params: u64, geom: &str, head_dim: u32, n_heads: u32, n_kv_heads: u32, d_c: u32, d_rope: u32, gpu: &str, count: u32, engine: &str, dtype: &str, kv_cache_dtype: &str, ctx: u32, prompt: u32, as_json: bool) -> PyResult<String> {
         let state = state_of(geom, head_dim, n_heads, n_kv_heads, d_c, d_rope)?;
-        let m = ModelShape { id: id.to_string(), layers, d_model, n_params, active_params, state, kv_kind: kv_kind_of(geom, active_params != n_params) };
+        let m = ModelShape { id: id.to_string(), layers, kv_layers, d_model, n_params, active_params, state, kv_kind: kv_kind_of(geom, active_params != n_params) };
         run_fit(m, gpu, count, engine, dtype, kv_cache_dtype, ctx, prompt, as_json)
     }
 
@@ -105,11 +105,11 @@ mod python {
 
     /// scan from explicit dims — the HF-fetch path.
     #[pyfunction]
-    #[pyo3(signature = (id, layers, d_model, n_params, active_params, geom, head_dim = 0, n_heads = 0, n_kv_heads = 0, d_c = 0, d_rope = 0, gpu = "a100-80gb", count = 1, engine = "vllm", dtype = "fp16", kv_cache_dtype = "fp16", prompt = 2048, as_json = false))]
+    #[pyo3(signature = (id, layers, kv_layers, d_model, n_params, active_params, geom, head_dim = 0, n_heads = 0, n_kv_heads = 0, d_c = 0, d_rope = 0, gpu = "a100-80gb", count = 1, engine = "vllm", dtype = "fp16", kv_cache_dtype = "fp16", prompt = 2048, as_json = false))]
     #[allow(clippy::too_many_arguments)]
-    fn scan_shape(id: &str, layers: u32, d_model: u32, n_params: u64, active_params: u64, geom: &str, head_dim: u32, n_heads: u32, n_kv_heads: u32, d_c: u32, d_rope: u32, gpu: &str, count: u32, engine: &str, dtype: &str, kv_cache_dtype: &str, prompt: u32, as_json: bool) -> PyResult<String> {
+    fn scan_shape(id: &str, layers: u32, kv_layers: u32, d_model: u32, n_params: u64, active_params: u64, geom: &str, head_dim: u32, n_heads: u32, n_kv_heads: u32, d_c: u32, d_rope: u32, gpu: &str, count: u32, engine: &str, dtype: &str, kv_cache_dtype: &str, prompt: u32, as_json: bool) -> PyResult<String> {
         let state = state_of(geom, head_dim, n_heads, n_kv_heads, d_c, d_rope)?;
-        let m = ModelShape { id: id.to_string(), layers, d_model, n_params, active_params, state, kv_kind: kv_kind_of(geom, active_params != n_params) };
+        let m = ModelShape { id: id.to_string(), layers, kv_layers, d_model, n_params, active_params, state, kv_kind: kv_kind_of(geom, active_params != n_params) };
         run_scan(m, gpu, count, engine, dtype, kv_cache_dtype, prompt, as_json)
     }
 

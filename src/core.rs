@@ -44,6 +44,10 @@ impl Interval {
 pub struct ModelShape {
     pub id: String,
     pub layers: u32,
+    /// Layers that actually hold a growing KV cache. Equals `layers` for dense/full-attention
+    /// models; for HYBRID models (linear/GDN attention + full attention every Nth layer, e.g.
+    /// Qwen3-Next) only the full-attention layers count — else KV is over-estimated ~N×.
+    pub kv_layers: u32,
     pub d_model: u32,       // hidden size — drives the calibrated activation/cudagraph overhead
     pub n_params: u64,     // ALL params — what memory must hold (every MoE expert is resident)
     pub active_params: u64, // params read PER TOKEN — equals n_params for dense; << for MoE
@@ -298,7 +302,7 @@ pub fn active_weights_bytes(m: &ModelShape, q: &dyn QuantScheme) -> u64 {
 /// Σ over layers of per-layer state at sequence length `n` (invariant I2).
 /// `kv_bytes` is the KV-cache element size — independent of the weight quant.
 pub fn state_bytes(m: &ModelShape, n: u64, kv_bytes: u8) -> u64 {
-    m.state.layer_state_bytes(n, kv_bytes) * m.layers as u64
+    m.state.layer_state_bytes(n, kv_bytes) * m.kv_layers as u64
 }
 
 /// TTFT — prefill is compute-bound (right of the ridge point): 2·N·P / (flops·MFU).

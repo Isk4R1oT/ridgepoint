@@ -9,7 +9,7 @@ Two layers:
 """
 from . import _core
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 
 def _shape_args(model: str) -> tuple:
@@ -17,7 +17,7 @@ def _shape_args(model: str) -> tuple:
     from .hf import fetch_shape
     s = fetch_shape(model)
     return (
-        s["id"], s["layers"], s["d_model"], s["n_params"], s["active_params"], s["geom"],
+        s["id"], s["layers"], s.get("kv_layers", s["layers"]), s["d_model"], s["n_params"], s["active_params"], s["geom"],
         s.get("head_dim", 0), s.get("n_heads", 0), s.get("n_kv_heads", 0), s.get("d_c", 0), s.get("d_rope", 0),
     )
 

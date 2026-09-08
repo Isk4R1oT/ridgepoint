@@ -8,6 +8,7 @@ n_params / active_params are ESTIMATES from HF metadata (documented) — they fe
 overhead/decode, so approximation is honest, not silent.
 """
 import json
+import urllib.request
 
 from huggingface_hub import hf_hub_download
 
@@ -37,7 +38,20 @@ def fetch_shape(repo: str, revision: str = "main") -> dict:
     n_kv = int(field("num_key_value_heads", n_heads))
     head_dim = int(field("head_dim") or (d_model // n_heads))
 
-    out = {"id": repo, "layers": layers, "d_model": d_model}
+    # HYBRID attention: only full-attention layers hold a growing KV cache. Detect from
+    # `layer_types` (array of "full_attention"/"linear_attention") or `full_attention_interval`
+    # (every Nth layer is full — Qwen3-Next). Dense models keep kv_layers == layers; getting
+    # this wrong over-estimates KV ~N× and flips "won't serve" verdicts on hybrid models.
+    kv_layers = layers
+    layer_types = field("layer_types")
+    interval = field("full_attention_interval")
+    if isinstance(layer_types, list) and layer_types:
+        kv_layers = sum(1 for t in layer_types if "full" in str(t).lower())
+    elif interval:
+        kv_layers = layers // int(interval)
+    kv_layers = max(1, min(kv_layers, layers))
+
+    out = {"id": repo, "layers": layers, "kv_layers": kv_layers, "d_model": d_model}
 
     # geometry: MLA (DeepSeek) if a compressed-KV latent is present; else GQA; MHA when kv==heads
     if field("kv_lora_rank"):
@@ -60,17 +74,62 @@ def fetch_shape(repo: str, revision: str = "main") -> dict:
 
 
 def _params_from_index(repo: str, revision: str, cfg: dict, tc: dict) -> int:
-    """Parameter count from the safetensors index (total_size ÷ stored dtype bytes)."""
+    """Exact parameter count from safetensors tensor SHAPES (dtype-agnostic).
+
+    Dividing `total_size` by a config dtype breaks when the checkpoint is stored at a
+    different width than `torch_dtype` claims — e.g. GLM-4.7-Flash ships 1-byte (fp8)
+    weights with `torch_dtype` absent, so the old code assumed bf16 and under-counted 2×.
+    Shapes don't lie: sum numel over every tensor header. Falls back to the dtype division,
+    then to a config estimate, if the headers can't be read (gated repo / offline)."""
+    try:
+        n = sum(_safetensors_numel(repo, revision, fn) for fn in _safetensors_shards(repo, revision))
+        if n > 0:
+            return n
+    except Exception:
+        pass
     try:
         idx = _download_json(repo, "model.safetensors.index.json", revision)
         total_bytes = int(idx["metadata"]["total_size"])
         dt = str(cfg.get("torch_dtype") or tc.get("torch_dtype") or "bfloat16").lower()
         return int(total_bytes / _DTYPE_BYTES.get(dt, 2))
     except Exception:
-        # Fallback: rough dense transformer estimate (~12·L·h² + 2·V·h). Approximate.
+        # Last resort: rough dense transformer estimate (~12·L·h² + 2·V·h). Approximate.
         L, h = int(tc.get("num_hidden_layers")), int(tc.get("hidden_size"))
         v = int(cfg.get("vocab_size", 32000))
         return int(12 * L * h * h + 2 * v * h)
+
+
+def _safetensors_shards(repo: str, revision: str) -> list:
+    """Safetensors shard filenames — the sharded index's weight_map, or the single file."""
+    try:
+        idx = _download_json(repo, "model.safetensors.index.json", revision)
+        return sorted(set(idx["weight_map"].values()))
+    except Exception:
+        return ["model.safetensors"]
+
+
+def _safetensors_numel(repo: str, revision: str, filename: str) -> int:
+    """Sum of tensor element counts in one safetensors file, read from its header only:
+    8-byte little-endian header length, then a JSON header {name: {dtype, shape, ...}}."""
+    import struct
+
+    url = f"https://huggingface.co/{repo}/resolve/{revision}/{filename}"
+
+    def _range(a: int, b: int) -> bytes:
+        req = urllib.request.Request(url, headers={"Range": f"bytes={a}-{b}", "User-Agent": "ridgepoint"})
+        return urllib.request.urlopen(req, timeout=30).read()
+
+    header_len = struct.unpack("<Q", _range(0, 7))[0]
+    header = json.loads(_range(8, 7 + header_len))
+    total = 0
+    for name, meta in header.items():
+        if name == "__metadata__":
+            continue
+        numel = 1
+        for dim in meta.get("shape") or []:
+            numel *= int(dim)
+        total += numel
+    return total
 
 
 def _active_params(cfg: dict, tc: dict, n_params: int) -> int:

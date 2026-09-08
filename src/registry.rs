@@ -30,7 +30,7 @@ pub fn model(id: &str) -> Option<ModelShape> {
         "deepseek-r1" => (61, 7168, 671_000_000_000, 37_000_000_000, StateGeometry::Mla { d_c: 512, d_rope: 64 }, "MLA·MoE"),
         _ => return None,
     };
-    Some(ModelShape { id: id.into(), layers, d_model, n_params, active_params: active, state, kv_kind })
+    Some(ModelShape { id: id.into(), layers, kv_layers: layers, d_model, n_params, active_params: active, state, kv_kind })
 }
 
 pub fn device(id: &str) -> Option<Device> {
